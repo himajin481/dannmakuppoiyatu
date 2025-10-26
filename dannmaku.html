@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>弾幕ゲーム</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #111;
+            color: #eee;
+            font-family: 'Meiryo', 'Hiragino Kaku Gothic ProN', sans-serif;
+        }
+        #game-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+        }
+        canvas {
+            background-color: #000;
+            border: 2px solid #fff;
+            box-shadow: 0 0 15px #fff;
+        }
+        #info {
+            margin-top: 20px;
+            width: 600px;
+        }
+        #score {
+            font-size: 1.5em;
+            font-weight: bold;
+        }
+        #score-display {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+        }
+        #high-score {
+            font-size: 1.2em;
+            color: #ffdd44;
+            font-weight: bold;
+        }
+        #player-stats {
+            display: flex;
+            justify-content: space-between;
+            font-size: 1.2em;
+        }
+        #game-over {
+            display: none;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #ff4444;
+            font-size: 4em;
+            font-weight: bold;
+            text-shadow: 0 0 10px #ff0000;
+        }
+        #restart-message {
+            display: none;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, 50px); /* GAME OVERの下に表示 */
+            color: #fff;
+            font-size: 1.5em;
+            font-weight: bold;
+            text-shadow: 0 0 5px #000;
+            animation: blink 1.5s linear infinite;
+        }
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0; }
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <canvas id="gameCanvas" width="600" height="800"></canvas>
+        <div id="info">
+            <p>移動: ADキー or ←→キー | ショット: 左クリック</p>
+            <div id="score-display">
+                <p id="score">SCORE: 0</p>
+                <p id="high-score">HI-SCORE: 0</p>
+            </div>
+            <div id="player-stats">
+                <span id="power-level">POWER: 1</span>
+                <span id="bombs">BOMB: 3</span>
+            </div>
+        </div>
+        <div id="game-over">GAME OVER</div>
+        <div id="restart-message">Press Enter to Restart</div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreEl = document.getElementById('score');
+        const highScoreEl = document.getElementById('high-score');
+        const powerLevelEl = document.getElementById('power-level');
+        const bombsEl = document.getElementById('bombs');
+        const gameOverEl = document.getElementById('game-over');
+        const restartMessageEl = document.getElementById('restart-message');
+
+        let score = 0;
+        let highScore = 0;
+        let gameOver = false;
+        let frameCount = 0;
+
+        // プレイヤー
+        const player = {
+            x: canvas.width / 2,
+            y: canvas.height - 50,
+            width: 30,
+            height: 30,
+            speed: 5,
+            color: '#00aaff',
+            shotLevel: 1,
+            bombs: 3,
+            draw() {
+                ctx.fillStyle = this.color;
+                ctx.fillRect(this.x - this.width / 2, this.y - this.height / 2, this.width, this.height);
+            }
+        };
+
+        // キー入力
+        const keys = {
+            ArrowLeft: false,
+            ArrowRight: false,
+            a: false,
+            d: false
+        };
+        let isMouseDown = false;
+
+        document.addEventListener('keydown', (e) => {
+            const key = e.key.toLowerCase();
+            if (gameOver && key === 'enter') {
+                resetGame();
+            } else if (key in keys) {
+                keys[key] = true;
+            }
+        });
+        document.addEventListener('keyup', (e) => {
+            if (e.key in keys) keys[e.key.toLowerCase()] = false;
+        });
+
+        // マウス入力
+        canvas.addEventListener('mousedown', (e) => {
+            if (e.button === 0) { // 0: 左クリック
+                isMouseDown = true;
+            }
+        });
+        canvas.addEventListener('mouseup', (e) => {
+            if (e.button === 0) {
+                isMouseDown = false;
+            }
+        });
+        canvas.addEventListener('mouseleave', () => { // カーソルがcanvas外に出たら射撃停止
+            isMouseDown = false;
+        });
+
+        // 配列
+        let playerBullets = [];
+        let enemies = [];
+        let enemyBullets = [];
+        let powerUpItems = [];
+
+        // 弾クラス
+        class Bullet {
+            constructor(x, y, speedX, speedY, radius, color) {
+                this.x = x;
+                this.y = y;
+                this.speedX = speedX;
+                this.speedY = speedY;
+                this.radius = radius;
+                this.color = color;
+            }
+
+            update() {
+                this.x += this.speedX;
+                this.y += this.speedY;
+            }
+
+            draw() {
+                ctx.fillStyle = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // パワーアップアイテムクラス
+        class PowerUpItem {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.width = 20;
+                this.height = 20;
+                this.color = '#ffff00';
+                this.speedY = 2;
+            }
+
+            update() {
+                this.y += this.speedY;
+            }
+
+            draw() {
+                ctx.fillStyle = this.color;
+                ctx.fillRect(this.x - this.width / 2, this.y - this.height / 2, this.width, this.height);
+                ctx.fillStyle = '#000';
+                ctx.font = 'bold 14px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('P', this.x, this.y);
+            }
+        }
+
+        // --- 敵クラス ---
+
+        // 敵の親クラス (共通の機能)
+        class Enemy {
+            constructor(x, y, hp, width, height, color) {
+                this.x = x;
+                this.y = y;
+                this.width = width;
+                this.height = height;
+                this.hp = hp;
+                this.maxHp = hp;
+                this.color = color;
+            }
+
+            draw() {
+                // 本体
+                ctx.fillStyle = this.color;
+                ctx.fillRect(this.x - this.width / 2, this.y - this.height / 2, this.width, this.height);
+                // HPバー (HPが満タンでない時だけ表示)
+                if (this.hp < this.maxHp) {
+                    ctx.fillStyle = '#555';
+                    ctx.fillRect(this.x - this.width / 2, this.y - this.height / 2 - 10, this.width, 5);
+                    ctx.fillStyle = 'lime';
+                    ctx.fillRect(this.x - this.width / 2, this.y - this.height / 2 - 10, this.width * (this.hp / this.maxHp), 5);
+                }
+            }
+
+            // updateメソッドは各子クラスで実装する
+            update() {
+                this.y += 1; // 基本的な動きとして下に移動
+            }
+        }
+
+        // 種類1: プレイヤーを狙う敵 (従来の敵)
+        class AimingEnemy extends Enemy {
+            constructor(x, y) {
+                super(x, y, 10, 40, 40, '#ff4444'); // hp, width, height, color
+                this.shotInterval = 200; // この敵の発射間隔 (フレーム)
+                this.shotCooldown = Math.random() * this.shotInterval; // 最初の発射タイミングをずらす
+            }
+
+            update() {
+                super.update(); // 親のupdateを呼び出し、下に移動
+
+                this.shotCooldown--;
+                if (this.shotCooldown <= 0) {
+                    const angle = Math.atan2(player.y - this.y, player.x - this.x);
+                    const speed = 3.5;
+                    enemyBullets.push(new Bullet(this.x, this.y, Math.cos(angle) * speed, Math.sin(angle) * speed, 5, '#ff88ff'));
+                    this.shotCooldown = this.shotInterval;
+                }
+            }
+        }
+
+        // 種類2: スパイラル弾を撃つ敵
+        class SpiralEnemy extends Enemy {
+            constructor(x, y) {
+                super(x, y, 5, 35, 35, '#88ff88'); // hp, width, height, color
+                this.shotInterval = 30; // この敵の発射間隔 (フレーム)
+                this.shotCooldown = 0;
+                this.shotAngle = 0;
+            }
+
+            update() {
+                super.update();
+
+                this.shotCooldown--;
+                if (this.shotCooldown <= 0) {
+                    const speed = 2.5;
+                    enemyBullets.push(new Bullet(this.x, this.y, Math.cos(this.shotAngle) * speed, Math.sin(this.shotAngle) * speed, 4, '#aaffaa'));
+                    this.shotAngle += 0.5; // 角度を少しずつずらす
+                    this.shotCooldown = this.shotInterval;
+                }
+            }
+        }
+
+        // 種類3: 左右に揺れながら3-way弾を撃つ敵
+        class WaveEnemy extends Enemy {
+            constructor(x, y) {
+                super(x, y, 8, 40, 30, '#8888ff'); // hp, width, height, color
+                this.baseX = x;
+                this.shotInterval = 290; // この敵の発射間隔 (フレーム)
+                this.shotCooldown = Math.random() * this.shotInterval;
+            }
+
+            update() {
+                super.update();
+                this.x = this.baseX + Math.sin(this.y / 50) * 100; // y座標に応じてsin波で揺れる
+
+                this.shotCooldown--;
+                if (this.shotCooldown <= 0) {
+                    const speed = 2.8;
+                    for (let i = -1; i <= 1; i++) { // 3方向に発射
+                        enemyBullets.push(new Bullet(this.x, this.y, i * 0.5, speed, 5, '#aaaaff'));
+                    }
+                    this.shotCooldown = this.shotInterval;
+                }
+            }
+        }
+
+        // 衝突判定 (矩形 vs 円)
+        function rectCircleColliding(rect, circle) {
+            const distX = Math.abs(circle.x - rect.x - rect.width / 2);
+            const distY = Math.abs(circle.y - rect.y - rect.height / 2);
+
+            if (distX > (rect.width / 2 + circle.radius)) { return false; }
+            if (distY > (rect.height / 2 + circle.radius)) { return false; }
+
+            if (distX <= (rect.width / 2)) { return true; }
+            if (distY <= (rect.height / 2)) { return true; }
+
+            const dx = distX - rect.width / 2;
+            const dy = distY - rect.height / 2;
+            return (dx * dx + dy * dy <= (circle.radius * circle.radius));
+        }
+
+        // 衝突判定 (矩形 vs 矩形)
+        function rectsColliding(rect1, rect2) {
+            return rect1.x < rect2.x + rect2.width &&
+                   rect1.x + rect1.width > rect2.x &&
+                   rect1.y < rect2.y + rect2.height &&
+                   rect1.y + rect1.height > rect2.y;
+        }
+
+        function resetGame() {
+            // プレイヤーの状態をリセット
+            player.x = canvas.width / 2;
+            player.y = canvas.height - 50;
+            player.shotLevel = 1;
+            player.bombs = 3;
+
+            // ゲームの状態をリセット
+            score = 0;
+            frameCount = 0;
+            gameOver = false;
+
+            // 配列を空にする
+            playerBullets = [];
+            enemies = [];
+            enemyBullets = [];
+            powerUpItems = [];
+
+            // UIをリセット
+            scoreEl.textContent = `SCORE: ${score}`;
+            powerLevelEl.textContent = `POWER: ${player.shotLevel}`;
+            bombsEl.textContent = `BOMB: ${player.bombs}`;
+            gameOverEl.style.display = 'none';
+            restartMessageEl.style.display = 'none';
+
+            // ゲームループを再開
+            update();
+        }
+
+        function initializeGame() {
+            // ハイスコアをlocalStorageから読み込む
+            highScore = localStorage.getItem('danmakuHighScore') || 0;
+            highScoreEl.textContent = `HI-SCORE: ${highScore}`;
+            update();
+        }
+
+
+        function update() {
+            if (gameOver) return;
+
+            // プレイヤーの移動
+            if ((keys.ArrowLeft || keys.a) && player.x > player.width / 2) player.x -= player.speed;
+            if ((keys.ArrowRight || keys.d) && player.x < canvas.width - player.width / 2) player.x += player.speed;
+
+            // プレイヤーのショット
+            if (isMouseDown && frameCount % 5 === 0) { // 5フレームに1発
+                const level = player.shotLevel;
+                const bulletSpeed = -10;
+                const bulletRadius = 4;
+                const bulletColor = '#ffff00';
+
+                // 中央の弾
+                playerBullets.push(new Bullet(player.x, player.y - player.height / 2, 0, bulletSpeed, bulletRadius, bulletColor));
+
+                // レベルに応じて追加の弾を発射
+                for (let i = 1; i < level; i++) {
+                    const angle = 0.15 * i; // 弾の広がる角度
+                    playerBullets.push(new Bullet(player.x, player.y - player.height / 2, bulletSpeed * Math.sin(angle), bulletSpeed * Math.cos(angle), bulletRadius, bulletColor));
+                    playerBullets.push(new Bullet(player.x, player.y - player.height / 2, bulletSpeed * Math.sin(-angle), bulletSpeed * Math.cos(angle), bulletRadius, bulletColor));
+                }
+            }
+
+            // 敵の生成
+            // パワーレベルに応じて出現間隔を短くする
+            const baseSpawnInterval = 100; // 基本の出現間隔
+            const minSpawnInterval = 30;   // 最短の出現間隔
+            const currentSpawnInterval = Math.max(minSpawnInterval, baseSpawnInterval - (player.shotLevel - 1) * 15);
+            if (frameCount % Math.floor(currentSpawnInterval) === 0) {
+                const x = Math.random() * (canvas.width - 40) + 20;
+                const rand = Math.random();
+
+                if (rand < 0.5) { // 50%の確率でAimingEnemy
+                    enemies.push(new AimingEnemy(x, -20));
+                } else if (rand < 0.75) { // 25%の確率でSpiralEnemy
+                    enemies.push(new SpiralEnemy(x, -20));
+                } else { // 25%の確率でWaveEnemy
+                    enemies.push(new WaveEnemy(x, -20));
+                }
+            }
+
+            // 更新処理
+            [...playerBullets, ...enemies, ...enemyBullets, ...powerUpItems].forEach(obj => obj.update());
+
+            // 衝突判定: プレイヤー弾 vs 敵
+            for (let i = playerBullets.length - 1; i >= 0; i--) {
+                for (let j = enemies.length - 1; j >= 0; j--) {
+                    const bullet = playerBullets[i];
+                    const enemy = enemies[j];
+                    if (rectCircleColliding({x: enemy.x - enemy.width/2, y: enemy.y - enemy.height/2, width: enemy.width, height: enemy.height}, bullet)) {
+                        playerBullets.splice(i, 1);
+                        enemy.hp--;
+                        if (enemy.hp <= 0) {
+                            enemies.splice(j, 1);
+                            score += 100;
+                            scoreEl.textContent = `SCORE: ${score}`;
+
+                            // 15%の確率でパワーアップアイテムをドロップ
+                            if (Math.random() < 0.15) {
+                                powerUpItems.push(new PowerUpItem(enemy.x, enemy.y));
+                            }
+                        }
+                        break; // 弾は消えるので次の敵のチェックは不要
+                    }
+                }
+            }
+
+            // 衝突判定: 敵弾 vs プレイヤー
+            for (let i = enemyBullets.length - 1; i >= 0; i--) {
+                const bullet = enemyBullets[i];
+                if (rectCircleColliding({x: player.x - player.width/2, y: player.y - player.height/2, width: player.width, height: player.height}, bullet)) {
+                    gameOver = true;
+                    // ハイスコアの更新チェック
+                    if (score > highScore) {
+                        highScore = score;
+                        highScoreEl.textContent = `HI-SCORE: ${highScore}`;
+                        localStorage.setItem('danmakuHighScore', highScore);
+                    }
+
+                    gameOverEl.style.display = 'block';
+                    restartMessageEl.style.display = 'block';
+                    break;
+                }
+            }
+
+            // 衝突判定: アイテム vs プレイヤー
+            for (let i = powerUpItems.length - 1; i >= 0; i--) {
+                const item = powerUpItems[i];
+                if (rectsColliding({x: player.x - player.width/2, y: player.y - player.height/2, width: player.width, height: player.height}, {x: item.x - item.width/2, y: item.y - item.height/2, width: item.width, height: item.height})) {
+                    powerUpItems.splice(i, 1);
+                    if (player.shotLevel < 5) {
+                        player.shotLevel++;
+                        powerLevelEl.textContent = `POWER: ${player.shotLevel}`;
+                    } else {
+                        score += 500; // 最大レベル時はスコア加算
+                        scoreEl.textContent = `SCORE: ${score}`;
+                    }
+                }
+            }
+
+            // 画面外のオブジェクトを削除
+            playerBullets = playerBullets.filter(b => b.y > -b.radius);
+            enemyBullets = enemyBullets.filter(b => b.y < canvas.height + b.radius && b.x > -b.radius && b.x < canvas.width + b.radius);
+            enemies = enemies.filter(e => e.y < canvas.height + e.height);
+            powerUpItems = powerUpItems.filter(item => item.y < canvas.height + item.height);
+
+            // 描画処理
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            player.draw();
+            [...playerBullets, ...enemies, ...enemyBullets, ...powerUpItems].forEach(obj => obj.draw());
+
+            frameCount++;
+            requestAnimationFrame(update);
+        }
+
+        initializeGame();
+    </script>
+</body>
+</html>
